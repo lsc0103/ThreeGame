@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>原神风格RPG游戏</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div id="game-container">
+        <div id="loading">游戏加载中...</div>
+        <div id="start-hint">点击屏幕开始游戏！</div>
+        <div id="ui-overlay">
+            <div id="health-panel" class="ui-panel">
+                <div style="color: #333; font-weight: bold; margin-bottom: 10px;">冒险者状态</div>
+                <div style="margin-bottom: 5px;">生命值</div>
+                <div class="health-bar">
+                    <div class="health-fill" id="health-fill" style="width: 100%;"></div>
+                </div>
+                <div style="margin-bottom: 5px;">元素能量</div>
+                <div class="health-bar">
+                    <div class="health-fill mana-fill" id="mana-fill" style="width: 80%;"></div>
+                </div>
+            </div>
+            
+            <div id="model-panel" class="ui-panel">
+                <div style="color: #333; font-weight: bold; margin-bottom: 10px;">模型管理</div>
+                <input type="file" id="file-input" accept=".vrm,.glb,.gltf" style="font-size: 12px;">
+                <div class="model-info" id="model-info">当前: 默认角色</div>
+                <button class="model-button" onclick="resetToDefaultPlayer()">重置默认</button>
+                <button class="model-button" onclick="togglePlayerVisibility()">显示/隐藏</button>
+                <button class="model-button" onclick="toggleDebug()">调试信息</button>
+            </div>
+            
+            <div id="controls-panel" class="ui-panel">
+                <div style="color: #333; font-weight: bold; margin-bottom: 10px;">操作指南</div>
+                <div>WASD - 移动</div>
+                <div>鼠标 - 视角</div>
+                <div>空格 - 跳跃</div>
+                <div>Shift - 冲刺</div>
+            </div>
+        </div>
+        
+        <div id="debug-info">
+            <div>模型状态: <span id="model-status">未加载</span></div>
+            <div>文件大小: <span id="file-size">-</span></div>
+            <div>解析状态: <span id="parse-status">-</span></div>
+        </div>
+    </div>
+
+    <!-- Three.js 库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- 游戏模块 -->
+    <script src="js/config.js"></script>
+    <script src="js/loaders/GLBLoader.js"></script>
+    <script src="js/core/GameCore.js"></script>
+    <script src="js/world/WorldBuilder.js"></script>
+    <script src="js/player/PlayerCreator.js"></script>
+    <script src="js/lighting/LightingSystem.js"></script>
+    <script src="js/controls/InputManager.js"></script>
+    <script src="js/ui/UIManager.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
