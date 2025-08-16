@@ -1,7 +1,9 @@
-// 修复的GLB加载器类 - 专门处理VRM模型
+// 修复的GLB加载器类 - 专门处理VRM模型（支持贴图）
 class SimpleGLBLoader {
     constructor() {
         this.fileReader = new FileReader();
+        this.textureLoader = new THREE.TextureLoader();
+        this.loadedTextures = new Map(); // 缓存已加载的贴图
     }
     
     load(file, onLoad, onProgress, onError) {
@@ -117,18 +119,20 @@ class SimpleGLBLoader {
             }
             
             // 处理SkinnedMesh（VRM的主要网格类型）
-            if (child.type === 'SkinnedMesh') {
+            if (child.type === 'SkinnedMesh' || child.isSkinnedMesh) {
                 child.visible = true;
                 child.castShadow = true;
                 child.receiveShadow = true;
                 child.frustumCulled = false; // 避免视锥体剔除问题
                 
-                // 修复材质
+                // 保持原始材质，不要替换
                 if (child.material) {
                     if (Array.isArray(child.material)) {
-                        child.material = child.material.map(mat => this.fixVRMMaterial(mat));
+                        child.material.forEach((mat, i) => {
+                            this.enhanceVRMMaterial(mat);
+                        });
                     } else {
-                        child.material = this.fixVRMMaterial(child.material);
+                        this.enhanceVRMMaterial(child.material);
                     }
                 }
                 
@@ -136,18 +140,20 @@ class SimpleGLBLoader {
             }
             
             // 处理普通Mesh
-            if (child.type === 'Mesh') {
+            if (child.type === 'Mesh' || child.isMesh) {
                 child.visible = true;
                 child.castShadow = true;
                 child.receiveShadow = true;
                 child.frustumCulled = false;
                 
-                // 修复材质
+                // 保持原始材质
                 if (child.material) {
                     if (Array.isArray(child.material)) {
-                        child.material = child.material.map(mat => this.fixVRMMaterial(mat));
+                        child.material.forEach((mat, i) => {
+                            this.enhanceVRMMaterial(mat);
+                        });
                     } else {
-                        child.material = this.fixVRMMaterial(child.material);
+                        this.enhanceVRMMaterial(child.material);
                     }
                 }
                 
@@ -171,66 +177,42 @@ class SimpleGLBLoader {
         gltf.scene.visible = true;
     }
     
-    fixVRMMaterial(material) {
-        if (!material) return null;
+    // 增强VRM材质（不替换，只优化）
+    enhanceVRMMaterial(material) {
+        if (!material) return;
         
-        console.log('修复VRM材质:', material.type, material.name || '未命名');
+        console.log('增强VRM材质:', material.type, material.name || '未命名');
         
-        // 创建新的Lambert材质以确保正确的光照响应
-        const newMaterial = new THREE.MeshLambertMaterial();
+        // 确保双面渲染
+        material.side = THREE.DoubleSide;
         
-        // 设置基础属性
-        newMaterial.side = THREE.DoubleSide;
-        newMaterial.shadowSide = THREE.DoubleSide;
-        
-        // 处理颜色
-        if (material.color) {
-            const colorHex = material.color.getHex();
-            
-            if (colorHex === 0x000000) {
-                // 纯黑色改为浅灰色以确保可见
-                newMaterial.color.setHex(0xcccccc);
-                console.log('修复黑色材质 -> 浅灰色');
-            } else if (material.color.r + material.color.g + material.color.b < 0.1) {
-                // 过暗颜色提亮
-                newMaterial.color.copy(material.color).multiplyScalar(5.0);
-                console.log('提亮过暗材质');
-            } else {
-                newMaterial.color.copy(material.color);
-            }
-        } else {
-            // 没有颜色则设置默认颜色
-            newMaterial.color.setHex(0xffffff);
-            console.log('设置默认白色');
-        }
-        
-        // 处理贴图
+        // 如果材质有贴图，确保贴图正确设置
         if (material.map) {
-            newMaterial.map = material.map;
-            console.log('应用贴图');
+            console.log('材质包含贴图');
+            material.map.encoding = THREE.sRGBEncoding; // 确保颜色空间正确
+            material.needsUpdate = true;
         }
         
-        // 处理透明度
-        if (material.transparent || material.opacity < 1.0) {
-            newMaterial.transparent = true;
-            newMaterial.opacity = Math.max(material.opacity || 1.0, 0.1); // 确保至少有一些透明度
-            newMaterial.alphaTest = 0.01;
-            console.log('设置透明度:', newMaterial.opacity);
-        } else {
-            newMaterial.transparent = false;
-            newMaterial.opacity = 1.0;
+        // 如果是透明材质，确保正确设置
+        if (material.transparent || material.alphaTest > 0) {
+            material.depthWrite = true;
+            material.alphaTest = material.alphaTest || 0.01;
         }
         
         // 确保材质可见
-        newMaterial.visible = true;
+        material.visible = true;
         
-        console.log('修复后材质:', {
-            color: newMaterial.color.getHex().toString(16),
-            transparent: newMaterial.transparent,
-            opacity: newMaterial.opacity
+        // 增加一些光照响应
+        if (material.emissive) {
+            material.emissiveIntensity = material.emissiveIntensity || 0.5;
+        }
+        
+        console.log('材质增强完成:', {
+            有贴图: !!material.map,
+            颜色: material.color ? material.color.getHex().toString(16) : '无',
+            透明: material.transparent,
+            透明度: material.opacity
         });
-        
-        return newMaterial;
     }
     
     parseGLB(arrayBuffer, onLoad, onError) {
@@ -286,6 +268,9 @@ class SimpleGLBLoader {
             const group = new THREE.Group();
             let meshCount = 0;
             
+            // 先解析所有图片数据
+            const textures = this.parseTextures(gltfData, binaryData);
+            
             // 检查是否是VRM
             const isVRM = gltfData.extensions && gltfData.extensions.VRM;
             console.log('是否为VRM:', isVRM);
@@ -295,7 +280,7 @@ class SimpleGLBLoader {
                 const scene = gltfData.scenes[0];
                 if (scene.nodes) {
                     scene.nodes.forEach(nodeIndex => {
-                        const nodeObject = this.parseNode(nodeIndex, gltfData, binaryData);
+                        const nodeObject = this.parseNode(nodeIndex, gltfData, binaryData, textures);
                         if (nodeObject) {
                             group.add(nodeObject);
                         }
@@ -309,7 +294,7 @@ class SimpleGLBLoader {
                 
                 gltfData.meshes.forEach((meshData, meshIndex) => {
                     try {
-                        const meshGroup = this.parseMeshData(meshData, gltfData, binaryData);
+                        const meshGroup = this.parseMeshData(meshData, gltfData, binaryData, textures);
                         if (meshGroup) {
                             group.add(meshGroup);
                             meshCount++;
@@ -351,7 +336,86 @@ class SimpleGLBLoader {
         }
     }
     
-    parseNode(nodeIndex, gltfData, binaryData) {
+    // 解析贴图
+    parseTextures(gltfData, binaryData) {
+        const textures = {};
+        
+        if (!gltfData.textures || !gltfData.images) {
+            return textures;
+        }
+        
+        console.log('开始解析贴图，数量:', gltfData.textures.length);
+        
+        gltfData.textures.forEach((textureData, index) => {
+            try {
+                if (textureData.source !== undefined && gltfData.images[textureData.source]) {
+                    const imageData = gltfData.images[textureData.source];
+                    
+                    // 从二进制数据创建贴图
+                    if (imageData.bufferView !== undefined && binaryData) {
+                        const bufferView = gltfData.bufferViews[imageData.bufferView];
+                        const imageBytes = binaryData.slice(
+                            bufferView.byteOffset,
+                            bufferView.byteOffset + bufferView.byteLength
+                        );
+                        
+                        // 创建Blob和URL
+                        const mimeType = imageData.mimeType || 'image/png';
+                        const blob = new Blob([imageBytes], { type: mimeType });
+                        const url = URL.createObjectURL(blob);
+                        
+                        // 加载贴图
+                        const texture = this.textureLoader.load(url);
+                        texture.encoding = THREE.sRGBEncoding;
+                        texture.flipY = false; // GLTF贴图不需要翻转
+                        
+                        // 设置采样器参数
+                        if (textureData.sampler !== undefined && gltfData.samplers) {
+                            const sampler = gltfData.samplers[textureData.sampler];
+                            this.applySampler(texture, sampler);
+                        }
+                        
+                        textures[index] = texture;
+                        console.log('贴图', index, '加载成功');
+                    }
+                }
+            } catch (error) {
+                console.warn('贴图', index, '加载失败:', error);
+            }
+        });
+        
+        return textures;
+    }
+    
+    // 应用采样器设置
+    applySampler(texture, sampler) {
+        if (!sampler) return;
+        
+        // 设置环绕模式
+        const wrapModes = {
+            10497: THREE.RepeatWrapping,
+            33071: THREE.ClampToEdgeWrapping,
+            33648: THREE.MirroredRepeatWrapping
+        };
+        
+        if (sampler.wrapS) texture.wrapS = wrapModes[sampler.wrapS] || THREE.RepeatWrapping;
+        if (sampler.wrapT) texture.wrapT = wrapModes[sampler.wrapT] || THREE.RepeatWrapping;
+        
+        // 设置过滤模式
+        const filterModes = {
+            9728: THREE.NearestFilter,
+            9729: THREE.LinearFilter,
+            9984: THREE.NearestMipmapNearestFilter,
+            9985: THREE.LinearMipmapNearestFilter,
+            9986: THREE.NearestMipmapLinearFilter,
+            9987: THREE.LinearMipmapLinearFilter
+        };
+        
+        if (sampler.magFilter) texture.magFilter = filterModes[sampler.magFilter] || THREE.LinearFilter;
+        if (sampler.minFilter) texture.minFilter = filterModes[sampler.minFilter] || THREE.LinearMipmapLinearFilter;
+    }
+    
+    parseNode(nodeIndex, gltfData, binaryData, textures) {
         if (!gltfData.nodes || !gltfData.nodes[nodeIndex]) {
             return null;
         }
@@ -386,7 +450,7 @@ class SimpleGLBLoader {
         if (nodeData.mesh !== undefined) {
             const meshData = gltfData.meshes[nodeData.mesh];
             if (meshData) {
-                const meshObject = this.parseMeshData(meshData, gltfData, binaryData);
+                const meshObject = this.parseMeshData(meshData, gltfData, binaryData, textures);
                 if (meshObject) {
                     nodeObject.add(meshObject);
                 }
@@ -396,7 +460,7 @@ class SimpleGLBLoader {
         // 处理子节点
         if (nodeData.children) {
             nodeData.children.forEach(childIndex => {
-                const childObject = this.parseNode(childIndex, gltfData, binaryData);
+                const childObject = this.parseNode(childIndex, gltfData, binaryData, textures);
                 if (childObject) {
                     nodeObject.add(childObject);
                 }
@@ -406,7 +470,7 @@ class SimpleGLBLoader {
         return nodeObject;
     }
     
-    parseMeshData(meshData, gltfData, binaryData) {
+    parseMeshData(meshData, gltfData, binaryData, textures) {
         if (!meshData.primitives || meshData.primitives.length === 0) {
             return null;
         }
@@ -472,15 +536,17 @@ class SimpleGLBLoader {
                     geometry.computeVertexNormals();
                 }
                 
-                // 创建材质 - 使用更好的默认材质
+                // 创建材质 - 保持原始材质数据
                 let material;
                 if (primitive.material !== undefined && gltfData.materials && gltfData.materials[primitive.material]) {
-                    material = this.parseMaterial(gltfData.materials[primitive.material], gltfData, binaryData);
+                    material = this.parseMaterial(gltfData.materials[primitive.material], gltfData, binaryData, textures);
                 } else {
-                    // 默认材质 - 避免纯黑色
-                    material = new THREE.MeshLambertMaterial({ 
-                        color: 0xcccccc, // 浅灰色而不是白色
-                        side: THREE.DoubleSide
+                    // 默认材质 - 使用标准材质以支持贴图
+                    material = new THREE.MeshStandardMaterial({ 
+                        color: 0xffffff,
+                        side: THREE.DoubleSide,
+                        metalness: 0.0,
+                        roughness: 0.5
                     });
                 }
                 
@@ -505,24 +571,59 @@ class SimpleGLBLoader {
         return meshGroup;
     }
     
-    parseMaterial(materialData, gltfData, binaryData) {
+    parseMaterial(materialData, gltfData, binaryData, textures) {
         try {
-            const material = new THREE.MeshLambertMaterial();
+            // 使用MeshStandardMaterial以获得更好的渲染效果
+            const material = new THREE.MeshStandardMaterial();
             
-            // 基础颜色
-            if (materialData.pbrMetallicRoughness && materialData.pbrMetallicRoughness.baseColorFactor) {
-                const color = materialData.pbrMetallicRoughness.baseColorFactor;
-                material.color.setRGB(color[0], color[1], color[2]);
-                if (color[3] < 1.0) {
-                    material.transparent = true;
-                    material.opacity = color[3];
+            // PBR材质参数
+            if (materialData.pbrMetallicRoughness) {
+                const pbr = materialData.pbrMetallicRoughness;
+                
+                // 基础颜色
+                if (pbr.baseColorFactor) {
+                    const color = pbr.baseColorFactor;
+                    material.color.setRGB(color[0], color[1], color[2]);
+                    if (color[3] < 1.0) {
+                        material.transparent = true;
+                        material.opacity = color[3];
+                    }
+                }
+                
+                // 基础颜色贴图
+                if (pbr.baseColorTexture && textures[pbr.baseColorTexture.index]) {
+                    material.map = textures[pbr.baseColorTexture.index];
+                    console.log('应用基础颜色贴图');
+                }
+                
+                // 金属度和粗糙度
+                material.metalness = pbr.metallicFactor !== undefined ? pbr.metallicFactor : 0.0;
+                material.roughness = pbr.roughnessFactor !== undefined ? pbr.roughnessFactor : 0.5;
+                
+                // 金属度粗糙度贴图
+                if (pbr.metallicRoughnessTexture && textures[pbr.metallicRoughnessTexture.index]) {
+                    material.metalnessMap = textures[pbr.metallicRoughnessTexture.index];
+                    material.roughnessMap = textures[pbr.metallicRoughnessTexture.index];
                 }
             }
             
-            // 贴图处理（简化版）
-            if (materialData.pbrMetallicRoughness && materialData.pbrMetallicRoughness.baseColorTexture) {
-                // 这里可以添加贴图加载逻辑
-                console.log('发现基础颜色贴图');
+            // 法线贴图
+            if (materialData.normalTexture && textures[materialData.normalTexture.index]) {
+                material.normalMap = textures[materialData.normalTexture.index];
+                if (materialData.normalTexture.scale !== undefined) {
+                    material.normalScale.setScalar(materialData.normalTexture.scale);
+                }
+            }
+            
+            // 自发光
+            if (materialData.emissiveFactor) {
+                material.emissive = new THREE.Color().fromArray(materialData.emissiveFactor);
+                material.emissiveIntensity = 1.0;
+            }
+            
+            // 自发光贴图
+            if (materialData.emissiveTexture && textures[materialData.emissiveTexture.index]) {
+                material.emissiveMap = textures[materialData.emissiveTexture.index];
             }
             
             // 双面材质
@@ -530,23 +631,22 @@ class SimpleGLBLoader {
                 material.side = THREE.DoubleSide;
             }
             
-            // 透明度
+            // 透明度模式
             if (materialData.alphaMode === 'BLEND') {
                 material.transparent = true;
-            }
-            
-            // 确保材质颜色不是纯黑
-            if (material.color.getHex() === 0x000000) {
-                material.color.setHex(0x888888);
+            } else if (materialData.alphaMode === 'MASK') {
+                material.alphaTest = materialData.alphaCutoff || 0.5;
             }
             
             return material;
             
         } catch (error) {
             console.warn('材质解析失败，使用默认材质:', error);
-            return new THREE.MeshLambertMaterial({ 
+            return new THREE.MeshStandardMaterial({ 
                 color: 0xcccccc,
-                side: THREE.DoubleSide 
+                side: THREE.DoubleSide,
+                metalness: 0.0,
+                roughness: 0.5
             });
         }
     }
@@ -637,7 +737,7 @@ class SimpleGLBLoader {
                 case 5123: // UNSIGNED_SHORT
                     typedArray = new Uint16Array(dataSlice.buffer, dataSlice.byteOffset, accessor.count * typeSize);
                     break;
-                case 5125: // UNSIGNED_INT - 修复：添加这个缺失的类型
+                case 5125: // UNSIGNED_INT
                     typedArray = new Uint32Array(dataSlice.buffer, dataSlice.byteOffset, accessor.count * typeSize);
                     break;
                 case 5126: // FLOAT
@@ -662,7 +762,7 @@ class SimpleGLBLoader {
             case 5121: return 1; // UNSIGNED_BYTE
             case 5122: return 2; // SHORT
             case 5123: return 2; // UNSIGNED_SHORT
-            case 5125: return 4; // UNSIGNED_INT - 修复：添加这个缺失的类型
+            case 5125: return 4; // UNSIGNED_INT
             case 5126: return 4; // FLOAT
             default: 
                 console.warn('未知的组件类型:', componentType);
